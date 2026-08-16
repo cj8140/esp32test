@@ -1,7 +1,7 @@
 //2026/08/15 
 //2026/08/16 FND v2 _5 level 1.6도 작동
 //2026/08/16 FND v3 _5 아들가속도코드 + level getMaxCount 값조절 + 가속도센서오류 자동리셋
-//Chat GPT  https://chatgpt.com/share/6a8036a9-60c0-83e8-988e-ab3a3b989ecb
+//Chat GPT  https://chatgpt.com/share/6a81f904-7430-83ee-aecc-ef202ea23b8f
 //Preference Additional Board manger  https://espressif.github.io/arduino-esp32/package_esp32_index.json
 //Board Manger : esp32
 //Librar Manger : ESP32Servo
