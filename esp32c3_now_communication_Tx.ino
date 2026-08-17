@@ -5,6 +5,7 @@
 
 #define MPU6500_ADDR  0x68
 #define LED_PIN 3
+#define BUZZER_PIN 5
 #define SDA_PIN       8
 #define SCL_PIN       9
 #define PWR_MGMT_1    0x6B
@@ -32,9 +33,18 @@ const float alpha = 0.30; // Ori = 0.15
 int count = 0;
 bool countReady = false;
 
+void startBuzzer(int type);
+void updateBuzzer();
+
 // LED 표식
 bool ledOn = false;
 unsigned long ledStartTime = 0;
+
+// 부저 멜로디
+bool buzzerPlaying = false;
+int buzzerStep = 0;
+int buzzerType = 0;
+unsigned long buzzerStartTime = 0;
 
 // MPU6500 레지스터 쓰기
 bool writeMPU6500(byte reg, byte value) {
@@ -121,6 +131,9 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   analogWrite(LED_PIN, 0);
 
+  pinMode(BUZZER_PIN, OUTPUT);
+  noTone(BUZZER_PIN);
+
   // MPU6500 초기화
   if (!initMPU6500()) {
     Serial.println("MPU6500을 확인하세요.");
@@ -200,11 +213,14 @@ void loop() {
   filteredAngleY = (alpha * rawAccAngleY) + ((1.0 - alpha) * filteredAngleY);
   filteredAngleY = constrain(filteredAngleY, -80, 0);
 
-// 동작 판정
-  if (filteredAngleY <= -50) { // 팔내림
+  // 동작 판정
+  if (filteredAngleY <= -50 && !countReady) { // 팔내림
     countReady = true;
+    startBuzzer(1);
   }
+
   if (countReady && filteredAngleY >= -20) { // 팔올림 1회 전송
+    startBuzzer(2);
 
   // 데이터 전송
     myData.value = 1;
@@ -239,5 +255,50 @@ void loop() {
     ledOn = false;
   }
 
+  updateBuzzer();
+
   delay(20);
+}
+
+// 부저 멜로디 시작
+void startBuzzer(int type) {
+  buzzerType = type;
+  buzzerStep = 0;
+  buzzerStartTime = millis();
+  buzzerPlaying = true;
+  updateBuzzer();
+}
+
+
+// 부저 멜로디 재생
+void updateBuzzer() {
+  if (!buzzerPlaying) {
+    return;
+  }
+
+  int melodyDown[] = {523, 659};   // 도5, 미5
+  int melodyUp[] = {784, 1047};    // 솔5, 도6
+  int duration[] = {100, 130};
+
+  int *melody;
+
+  if (buzzerType == 1) {
+    melody = melodyDown;
+  }
+  else {
+    melody = melodyUp;
+  }
+
+  if (millis() - buzzerStartTime >= duration[buzzerStep]) {
+    buzzerStep++;
+
+    if (buzzerStep >= 2) {
+      noTone(BUZZER_PIN);
+      buzzerPlaying = false;
+      return;
+    }
+
+    buzzerStartTime = millis();
+    tone(BUZZER_PIN, melody[buzzerStep], duration[buzzerStep]);
+  }
 }
