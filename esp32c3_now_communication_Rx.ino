@@ -2,18 +2,26 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <ESP32Servo.h>
-#include <TM1637Display.h>
+
+#include <LiquidCrystal_I2C.h>
+
+// #include <TM1637Display.h>
 
 #define RESET_PIN    0
 #define BUZZER_PIN   1
 #define SERVO_PIN    3
 #define LED_PIN      4
 
-#define FND_CLK_PIN  5
-#define FND_DIO_PIN  6
+// #define FND_CLK_PIN  5
+// #define FND_DIO_PIN  6
+
+#define SDA_PIN      8
+#define SCL_PIN      9
 
 Servo servoMotor;
-TM1637Display display(FND_CLK_PIN, FND_DIO_PIN);
+
+// TM1637Display display(FND_CLK_PIN, FND_DIO_PIN);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // ESP-NOW 데이터
 typedef struct {
@@ -55,10 +63,12 @@ void setup() {
   while (!Serial && (millis() - start < 3000)) {
     delay(10);
   }
+
   // Wi-Fi
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   esp_wifi_set_ps(WIFI_PS_NONE);  // Wi-Fi 절전 모드 OFF
+
   // 프로토콜 및 채널 고정
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
@@ -67,7 +77,7 @@ void setup() {
   // ESP-NOW
   Serial.println();
   Serial.println("================================");
-  Serial.println("ESP-NOW RECEIVER + SERVO + FND");
+  Serial.println("ESP-NOW RECEIVER + SERVO + LCD");
   Serial.println("================================");
 
   Serial.print("My MAC : ");
@@ -96,9 +106,19 @@ void setup() {
   servoMotor.write(142);
   lastServoAngle = 142;
   servoPosition = 142.0;
+
   // FND
+  /*
   display.setBrightness(7);
   display.clear();
+  */
+
+  // LCD
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(400000);
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
 
   // GPIO
   pinMode(RESET_PIN, INPUT_PULLUP);
@@ -123,6 +143,7 @@ void setup() {
 }
 
 void loop() {
+
   // 초기 위치에서 가변저항으로 난이도 변경
   if (lastServoAngle == 142) {
     int newDifficulty = map(analogRead(2), 0, 4095, 1, 5);
@@ -146,19 +167,24 @@ void loop() {
     receivedMove = false;
 
     servoPosition -= moveAngle;    // 서보 위치 감소
+
     if (servoPosition < 78.0) {
       servoPosition = 78.0;
     }
+
     lastServoAngle = round(servoPosition);
     servoMotor.write(lastServoAngle);
+
     // 남은 횟수 감소
     remainingCount--;
+
     if (remainingCount < 0) {
       remainingCount = 0;
     }
 
-    // FND 갱신
+    // LCD 갱신
     updateDisplay(difficulty, remainingCount);
+
     // 시리얼 출력
     Serial.print("1회 동작 처리");
     Serial.print("   Servo : ");
@@ -167,12 +193,15 @@ void loop() {
     Serial.print("   Remaining : ");
     Serial.println(remainingCount);
   }
+
   // 리셋 스위치
   if (digitalRead(RESET_PIN) == LOW) {
+
     for (int angle = lastServoAngle; angle <= 142; angle++) {    // 서보를 142°까지 복귀
       servoMotor.write(angle);
       delay(40);
     }
+
     lastServoAngle = 142;    // 게임 상태 초기화
     servoPosition = 142.0;
     celebrationPlayed = false;
@@ -195,11 +224,14 @@ void loop() {
     Serial.println("================================");
     Serial.println();
     delay(300);
+
+    playTaDa();
   }
 
   // 게임 클리어
   if (lastServoAngle <= 78) {
     analogWrite(LED_PIN, 128);
+
     if (!celebrationPlayed) {
       playMarioStageClear();
       celebrationPlayed = true;
@@ -209,10 +241,13 @@ void loop() {
   else {
     analogWrite(LED_PIN, 0);
   }
+
   // 시리얼 모니터
   static unsigned long lastPrint = 0;
+
   if (millis() - lastPrint >= 100) {
     lastPrint = millis();
+
     Serial.print("Servo : ");
     Serial.print(lastServoAngle);
     Serial.print(" deg   Difficulty : ");
@@ -238,8 +273,10 @@ void loop() {
   }
 
   static unsigned long lastPrint = 0;
+
   if (millis() - lastPrint >= 100) {
     lastPrint = millis();
+
     Serial.print("Y Angle : ");
     Serial.print(filteredAngleY, 1);
     Serial.print(" deg   Servo : ");
@@ -259,8 +296,10 @@ int getMaxCount(int level) {
     case 4: return 18;
     case 5: return 12;
   }
+
   return 64;
 }
+
 // FND 표시
 // 1-64
 // 2-40
@@ -271,13 +310,46 @@ int getMaxCount(int level) {
 void updateDisplay(int difficulty, int remaining) {
   difficulty = constrain(difficulty, 1, 5);
   remaining = constrain(remaining, 0, 99);
+
+  // FND 표시
+  /*
   uint8_t segments[4];
+
   segments[0] = display.encodeDigit(difficulty);
   segments[1] = 0x40;
   segments[2] = display.encodeDigit(remaining / 10);
   segments[3] = display.encodeDigit(remaining % 10);
 
   display.setSegments(segments);
+  */
+
+  // LCD 표시
+  lcd.setCursor(0, 0);
+  lcd.print("LVL:");
+  lcd.print(difficulty);
+  lcd.print("  REM:");
+  if (remaining < 10) lcd.print(" ");
+  lcd.print(remaining);
+
+// 진행률 계산
+  int maxCount = getMaxCount(difficulty);
+  int completedCount = maxCount - remaining;
+  int progressBlocks = (completedCount * 10) / maxCount;
+
+  progressBlocks = constrain(progressBlocks, 0, 10);
+
+  // LCD 둘째 줄
+  lcd.setCursor(0, 1);
+  lcd.print("PROG% ");
+
+  for (int i = 0; i < 10; i++) {
+    if (i < progressBlocks) {
+      lcd.print((char)255);
+    }
+    else {
+      lcd.write(0xA5);
+    }
+  }
 }
 
 // 레벨업 음악
@@ -289,6 +361,7 @@ void playLevelUp() {
     tone(BUZZER_PIN, melody[i], duration[i]);
     delay(duration[i] * 1.2);
   }
+
   noTone(BUZZER_PIN);
 }
 
@@ -327,7 +400,9 @@ void playMarioStageClear() {
     140, 140, 140, 280,
     140, 140, 140, 140, 600
   };
+
   int totalNotes = sizeof(melody) / sizeof(melody[0]);
+
   for (int i = 0; i < totalNotes; i++) {
     tone(
       BUZZER_PIN,
@@ -336,5 +411,6 @@ void playMarioStageClear() {
     );
     delay(duration[i] * 1.25);
   }
+
   noTone(BUZZER_PIN);
 }
