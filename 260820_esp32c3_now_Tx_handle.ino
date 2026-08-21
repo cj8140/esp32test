@@ -1,17 +1,34 @@
+// Rockannon 발신부  변경 이력
+// ================================================================
+// V1.0  2026-08-12 : -ESP32-C3 발신부 기본 구성, MPU6500 가속도 센서를 이용한 팔 동작 감지, 팔을 내렸다가 올리면 ESP-NOW로 1회 동작 전송
+//                   -수신부 MAC 주소 등록 및 ESP-NOW 통신 구성, 동작 성공 시 LED 점등
+// V1.1  2026-08-13 : -MPU6500 Y축 절대각도 계산 방식 적용, 팔 내림 
+//       올림 각도를 이용한 동작 판정, 팔 내림 : -50° 이하, 팔 올림 : -20° 이상, 동작 감지 후 1회만 전송되도록 countReady 적용
+// V1.2  2026-08-14 : -MPU6500 EMA 필터 적용, alpha 값을 이용한 각도 변화 안정화, 필터링된 각도를 -80° ~ 0° 범위로 제한
+// V1.3  2026-08-19 : -팔을 내렸을 때와 올렸을 때의 부저음 추가, 동작 단계에 따라 서로 다른 음을 출력, ESP-NOW 전송 성공 시 LED 점등
+// V1.4  2026-08-20 : -팔을 올렸을 때만 2음절 부저음 재생, 팔을 내렸을 때 부저음을 제거하여 동작 완료 시점을 명확하게 표시
+//         -2음절 "띠링" 효과를 빠르게 재생하도록 음 길이 조정
+//
+// V1.5  2026-08-21 : -발신부 리셋 버튼 추가, RESET_PIN을 이용하여 본체 리셋 명령을 ESP-NOW로 전송
+//     -ESP-NOW 데이터에 value / reset 두 가지 명령 추가, 리셋 버튼 Edge Detection 적용 → 버튼을 누르는 순간 1회만 전송
+// V1.6  2026-08-21 : -ESP-NOW 동작 데이터를 value = 1, reset = 0으로 명확하게 설정, 리셋 데이터를 value = 0, reset = 1로 설정
+//  -팔을 올렸을 때 정상적인 1회 동작 명령 전송 확인, 발신부 리셋 버튼으로 수신부 본체 리셋 및 리셋 음원 재생
+// ================================================================
+// 현재 버전 : V1.6
+// ================================================================
+
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <Wire.h>
 
-//MPU6500,6050모듈 대부분은 AD0에 아무것도 연결하지 않았을때, 내부보드에서 풀다운저항을 사용 GND로 연결되어 기본주소 0x68
-//내부모듈 불량, 접속불안정시 AD0이 플로팅상태. 노이즈에 따라 0x68, 0x69를 번갈아 연결
-//전선으로 3.3V연결하면 0x69, GND에 연결하면 0x68로 안정화됨 
-
-#define MPU6500_ADDR  0x68 // 8/19까지는 0x68로 작동했었음 20아침부터 작동안해 0x69로 바꿨는데도 계속 접속 못하는문제 발생
 #define LED_PIN 3
 #define BUZZER_PIN 5
-#define SDA_PIN       8
-#define SCL_PIN       9
+#define SDA_PIN       6
+#define SCL_PIN       7
+#define RESET_PIN    10
+#define MPU6500_ADDR  0x68
+
 #define PWR_MGMT_1    0x6B
 #define WHO_AM_I      0x75
 #define ACCEL_XOUT_H  0x3B
@@ -24,8 +41,10 @@ uint8_t receiverMac[] = {
 // ESP-NOW 데이터
 typedef struct struct_message {
   int value;
+  int reset;
 } struct_message;
-struct_message myData;
+struct_message myData = {};
+
 esp_now_peer_info_t peerInfo = {};
 
 // MPU6500 변수
@@ -129,13 +148,13 @@ void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
 void setup() {
   Serial.begin(115200);
   delay(500);
-
   // I2C
   Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(400000);
+  Wire.setClock(100000);
   delay(100);
 
   pinMode(LED_PIN, OUTPUT);
+  pinMode(RESET_PIN, INPUT_PULLUP);
 //  analogWrite(LED_PIN, 125);
 
   pinMode(BUZZER_PIN, OUTPUT);
@@ -209,6 +228,33 @@ void setup() {
 
 void loop() {
 
+  // 본체 리셋 버튼
+  static bool lastResetState = HIGH;
+  bool currentResetState = digitalRead(RESET_PIN);
+
+  if (lastResetState == HIGH && currentResetState == LOW) {
+    myData.value = 0;
+    myData.reset = 1;
+
+    esp_err_t result = esp_now_send(
+      receiverMac,
+      (uint8_t *)&myData,
+      sizeof(myData)
+    );
+
+    if (result == ESP_OK) {
+      Serial.println("본체 리셋 명령 전송");
+    }
+    else {
+      Serial.println("본체 리셋 명령 오류");
+    }
+
+    countReady = false;
+    filteredAngleY = 0;
+  }
+
+  lastResetState = currentResetState;
+
   // MPU6500 읽기
   if (!readMPU6500Accel(ax, ay, az)) {
     Serial.println("MPU6500 I2C ERROR");
@@ -227,14 +273,15 @@ void loop() {
   // 동작 판정
   if (filteredAngleY <= -50 && !countReady) { // 팔내림
     countReady = true;
-    startBuzzer(1);
   }
 
   if (countReady && filteredAngleY >= -20) { // 팔올림 1회 전송
     startBuzzer(2);
 
-  // 데이터 전송
+    // 데이터 전송
     myData.value = 1;
+    myData.reset = 0;
+
     esp_err_t result = esp_now_send(
       receiverMac,
       (uint8_t *)&myData,
@@ -265,9 +312,7 @@ void loop() {
     analogWrite(LED_PIN, 0);
     ledOn = false;
   }
-
   updateBuzzer();
-
   delay(20);
 }
 
@@ -277,9 +322,11 @@ void startBuzzer(int type) {
   buzzerStep = 0;
   buzzerStartTime = millis();
   buzzerPlaying = true;
-  updateBuzzer();
-}
 
+  if (buzzerType == 2) {
+    tone(BUZZER_PIN, 784, 90);   // 띠
+  }
+}
 
 // 부저 멜로디 재생
 void updateBuzzer() {
@@ -287,18 +334,8 @@ void updateBuzzer() {
     return;
   }
 
-  int melodyDown[] = {523, 659};   // 도5, 미5
-  int melodyUp[] = {784, 1047};    // 솔5, 도6
-  int duration[] = {100, 130};
-
-  int *melody;
-
-  if (buzzerType == 1) {
-    melody = melodyDown;
-  }
-  else {
-    melody = melodyUp;
-  }
+  int melody[] = {784, 1047};    // 솔5, 도6
+  int duration[] = {100, 150};
 
   if (millis() - buzzerStartTime >= duration[buzzerStep]) {
     buzzerStep++;
